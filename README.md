@@ -17,7 +17,7 @@ The easiest way to get started is to use our setup script:
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/fairrent.git
+git clone https://github.com/bbuxton0823/fairrent.git
 cd fairrent
 
 # Run the setup script
