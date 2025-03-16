@@ -1,0 +1,70 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: #ffffff;
+  --foreground: #171717;
+  --transition-duration: 200ms;
+  --transition-timing: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #0a0a0a;
+    --foreground: #ededed;
+  }
+}
+
+body {
+  color: var(--foreground);
+  background: var(--background);
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+/* Smooth scrolling */
+html {
+  scroll-behavior: smooth;
+}
+
+/* Smooth transitions for all interactive elements */
+a, button {
+  transition: all var(--transition-duration) var(--transition-timing);
+}
+
+/* Prevent layout shifts during animations */
+.dashboard-sidebar {
+  will-change: transform;
+  backface-visibility: hidden;
+}
+
+/* Optional: Add custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #1f2937;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #4b5563;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #6b7280;
+}
+
+/* Dark mode input styles */
+.dark input:-webkit-autofill,
+.dark input:-webkit-autofill:hover,
+.dark input:-webkit-autofill:focus {
+  -webkit-text-fill-color: white;
+  -webkit-box-shadow: 0 0 0px 1000px rgb(55 65 81) inset;
+  transition: background-color 5000s ease-in-out 0s;
+}
+
+.dark input {
+  color-scheme: dark;
+}

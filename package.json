@@ -1,0 +1,42 @@
+{
+  "name": "fairrent",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev --turbopack",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "@auth0/nextjs-auth0": "^3.5.0",
+    "@googlemaps/js-api-loader": "^1.16.8",
+    "@headlessui/react": "^2.2.0",
+    "@prisma/client": "^6.3.0",
+    "@react-google-maps/api": "^2.20.5",
+    "axios": "^1.7.9",
+    "clsx": "^2.1.1",
+    "dotenv": "^16.4.7",
+    "framer-motion": "^12.0.6",
+    "next": "^15.1.6",
+    "next-themes": "^0.4.4",
+    "nodemailer": "^6.10.0",
+    "openai": "^4.87.3",
+    "puppeteer": "^24.1.1",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "tailwind-merge": "^3.0.1"
+  },
+  "devDependencies": {
+    "@eslint/eslintrc": "^3",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "eslint": "^9",
+    "eslint-config-next": "15.1.6",
+    "postcss": "^8",
+    "prisma": "^6.3.0",
+    "tailwindcss": "^3.4.1",
+    "typescript": "^5"
+  }
+}

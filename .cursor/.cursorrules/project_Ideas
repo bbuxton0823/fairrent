@@ -1,0 +1,57 @@
+# Project Ideas
+
+## Overview
+The project involves building a comprehensive rent analysis app similar to GoSection8. The app will include features such as rent reasonableness, comparable data, map integration, rent laws/regulations, PDF generation, emailing, advanced AI chat/analysis, user authentication, roles, social logins, multi-tenant architecture, and subscription plans.
+
+## Core Features
+1. **Property Entry & Rent Analysis**: Collect property details and compare to local comps for a recommended rent.
+2. **Local/State/Federal Rent Laws**: Store or reference rent caps and control rules, and display disclaimers.
+3. **Maps**: Show subject property and nearby comps on an interactive map or embed a static map in the PDF.
+4. **PDF Output & Email**: Generate summaries, disclaimers, and adjustments, and email the final PDF to users.
+5. **AI Operator**: Summarize comps, provide disclaimers, and validate data using an LLM (OpenAI).
+6. **Auth & Roles**: Implement landlord vs. admin roles, with optional super-admin or multi-tenant approach.
+7. **Subscriptions**: Offer free (ad-supported), pro, and enterprise plans, possibly with usage-based billing via Stripe.
+
+## Initial Setup
+1. Create a new Next.js project:
+   ```bash
+   npx create-next-app rent-analysis-app
+   cd rent-analysis-app
+Install dependencies:
+npm install next react react-dom tailwindcss postcss autoprefixer axios puppeteer nodemailer next-auth bcrypt jsonwebtoken openai react-map-gl mapbox-gl stripe
+Initialize Tailwind (optional):
+npx tailwindcss init -p
+Basic Rent Analysis Flow
+
+Property Input Form: Create a form with fields for address, beds, baths, sqft, etc.
+API Route: Geocode address, fetch local comps, and calculate average rent.
+Result: Display the recommended rent range on the front end.
+Rent Laws & Regulations
+
+Create a rentRegulations.json file to store local rules.
+Adjust the recommended rent based on local rent control or caps.
+Map Integration
+
+Install Mapbox for interactive maps:
+npm install react-map-gl mapbox-gl
+Create a component to display the map with subject property and nearby comps.
+PDF Generation & Emailing
+
+Use Puppeteer or other libraries to generate PDFs.
+Use Nodemailer to email the final PDF to users.
+AI Operator
+
+Integrate an LLM (OpenAI) to summarize comps, provide disclaimers, and validate data.
+User Authentication & Roles
+
+Implement social login (Google, Apple, Facebook) or email/password authentication.
+Define roles for landlords and admins, with optional super-admin or multi-tenant approach.
+Subscription Plans
+
+Offer free, pro, and enterprise plans, possibly with usage-based billing via Stripe.
+Putting It All Together
+
+Organize the project files and folders according to the features and requirements.
+Next Steps & Final Notes
+
+Continue to refine and expand the app's features based on user feedback and requirements.

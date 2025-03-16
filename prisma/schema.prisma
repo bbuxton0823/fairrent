@@ -1,0 +1,316 @@
+// This is your Prisma schema file
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id              String   @id @default(cuid())
+  email           String   @unique
+  name            String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  role            String   @default("user") // "user", "admin", "analyst"
+  reports         PropertyReport[]
+  savedProperties SavedProperty[]
+  comments        Comment[]
+  notifications   Notification[]
+  teams           TeamMember[]
+}
+
+model Team {
+  id          String   @id @default(cuid())
+  name        String
+  createdAt   DateTime @default(now())
+  members     TeamMember[]
+  reports     PropertyReport[]
+}
+
+model TeamMember {
+  id        String   @id @default(cuid())
+  role      String   // "owner", "member", "viewer"
+  joinedAt  DateTime @default(now())
+  team      Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  teamId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId    String
+
+  @@index([teamId])
+  @@index([userId])
+}
+
+model PropertyReport {
+  id            String   @id @default(cuid())
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  address       String
+  propertyType  String
+  beds          Int
+  baths         Float
+  requestedRent Float
+  marketRent    Float?
+  status        String   @default("draft")
+  version       Int      @default(1)
+  isArchived    Boolean  @default(false)
+
+  // Property Details
+  propertyDetails Json
+  amenities       Json
+  location        Json
+  marketAnalysis  Json?
+  financialAnalysis Json?
+  recommendations Json?
+
+  // Additional Analysis Data
+  comparableProperties ComparableProperty[]
+  expenses            PropertyExpense[]
+  cashFlowHistory     CashFlowRecord[]
+  documents           Document[]
+  comments            Comment[]
+  maintenanceRecords  MaintenanceRecord[]
+  tenantHistory       TenantRecord[]
+  propertyTaxHistory  PropertyTaxRecord[]
+  insuranceHistory    InsuranceRecord[]
+  renovations         RenovationRecord[]
+
+  // Relations
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  team      Team?    @relation(fields: [teamId], references: [id])
+  teamId    String?
+
+  @@index([userId])
+  @@index([teamId])
+}
+
+model ComparableProperty {
+  id              String   @id @default(cuid())
+  address         String
+  price           Float
+  beds            Int
+  baths           Float
+  sqft            Int
+  yearBuilt       Int?
+  distance        Float    // Distance from main property
+  lastSold        DateTime?
+  propertyType    String
+  
+  // Relations
+  propertyReport  PropertyReport @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  reportId        String
+
+  @@index([reportId])
+}
+
+model PropertyExpense {
+  id          String   @id @default(cuid())
+  category    String   // e.g., "utilities", "maintenance", "taxes"
+  amount      Float
+  frequency   String   // "monthly", "annual", etc.
+  description String?
+  date        DateTime @default(now())
+  
+  // Relations
+  propertyReport PropertyReport @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  reportId       String
+
+  @@index([reportId])
+}
+
+model CashFlowRecord {
+  id            String   @id @default(cuid())
+  date          DateTime @default(now())
+  revenue       Float
+  expenses      Float
+  netCashFlow   Float
+  occupancyRate Float?
+  
+  // Relations
+  propertyReport PropertyReport @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  reportId       String
+
+  @@index([reportId])
+}
+
+model Document {
+  id          String   @id @default(cuid())
+  name        String
+  type        String   // "lease", "inspection", "tax", etc.
+  url         String
+  uploadedAt  DateTime @default(now())
+  
+  // Relations
+  propertyReport PropertyReport @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  reportId       String
+
+  @@index([reportId])
+}
+
+model SavedProperty {
+  id          String   @id @default(cuid())
+  address     String
+  notes       String?
+  savedAt     DateTime @default(now())
+  
+  // Relations
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId      String
+
+  @@index([userId])
+}
+
+model MaintenanceRecord {
+  id              String   @id @default(cuid())
+  date            DateTime
+  type            String   // "routine", "emergency", "improvement"
+  description     String
+  cost            Float
+  contractor      String?
+  warranty        String?
+  nextServiceDate DateTime?
+  status          String   // "scheduled", "in-progress", "completed"
+  
+  propertyReport  PropertyReport @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  reportId        String
+
+  @@index([reportId])
+}
+
+model TenantRecord {
+  id              String   @id @default(cuid())
+  startDate       DateTime
+  endDate         DateTime?
+  monthlyRent     Float
+  securityDeposit Float?
+  leaseTerms      Json?
+  tenantInfo      Json
+  status          String   // "active", "past", "evicted"
+  
+  propertyReport  PropertyReport @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  reportId        String
+
+  @@index([reportId])
+}
+
+model PropertyTaxRecord {
+  id              String   @id @default(cuid())
+  year            Int
+  amount          Float
+  assessedValue   Float
+  taxRate         Float
+  paymentDate     DateTime?
+  status          String   // "paid", "due", "delinquent"
+  
+  propertyReport  PropertyReport @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  reportId        String
+
+  @@index([reportId])
+}
+
+model InsuranceRecord {
+  id              String   @id @default(cuid())
+  provider        String
+  policyNumber    String
+  coverage        Json
+  premium         Float
+  startDate       DateTime
+  endDate         DateTime
+  claims          InsuranceClaim[]
+  
+  propertyReport  PropertyReport @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  reportId        String
+
+  @@index([reportId])
+}
+
+model InsuranceClaim {
+  id              String   @id @default(cuid())
+  date            DateTime
+  type            String
+  description     String
+  amount          Float
+  status          String   // "filed", "approved", "denied", "paid"
+  
+  insurance       InsuranceRecord @relation(fields: [insuranceId], references: [id], onDelete: Cascade)
+  insuranceId     String
+
+  @@index([insuranceId])
+}
+
+model RenovationRecord {
+  id              String   @id @default(cuid())
+  startDate       DateTime
+  endDate         DateTime?
+  description     String
+  cost            Float
+  contractor      String?
+  permits         String[]
+  status          String   // "planned", "in-progress", "completed"
+  
+  propertyReport  PropertyReport @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  reportId        String
+
+  @@index([reportId])
+}
+
+model Comment {
+  id          String   @id @default(cuid())
+  content     String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId      String
+  report      PropertyReport @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  reportId    String
+
+  @@index([userId])
+  @@index([reportId])
+}
+
+model Notification {
+  id          String   @id @default(cuid())
+  type        String   // "comment", "report", "maintenance", etc.
+  content     String
+  isRead      Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId      String
+
+  @@index([userId])
+}
+
+model NeighborhoodHistory {
+  id            String   @id @default(cuid())
+  zipCode       String
+  analysisDate  DateTime @default(now())
+  finalScore    Float
+  breakdown     Json     @default("{}")
+  rawData       Json?    @default("{}")
+
+  @@index([zipCode])
+  @@index([analysisDate])
+}
+
+model Analysis {
+  id                String   @id @default(uuid())
+  createdAt         DateTime @default(now())
+  address           String
+  beds              Int
+  baths             Int
+  squareFeet        Int
+  yearBuilt         Int
+  amenities         String   // stored as JSON
+  parking           String?
+  utilitySchedule   String?
+  propertyCondition String?
+  rentEstimateMin   Int?
+  rentEstimateMax   Int?
+  confidence        Int?     // e.g. 85 for 85%
+} 

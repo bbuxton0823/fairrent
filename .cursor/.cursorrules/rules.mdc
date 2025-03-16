@@ -1,0 +1,107 @@
+---
+description: 
+globs: 
+alwaysApply: false
+---
+
+Your **Rent Analysis App** is structured as a **GoSection8-style** platform with key features like rent reasonableness analysis, map integration, legal compliance, PDF generation, AI assistance, authentication, multi-tenant support, and subscription plans.
+
+### **Key Technologies:**
+- **Next.js (React-based framework)**
+- **Tailwind CSS** (for styling)
+- **NextAuth.js** (for authentication)
+- **Stripe** (for payments)
+- **OpenAI API** (for AI-powered analysis)
+- **Puppeteer** (for PDF generation)
+- **Nodemailer** (for email handling)
+- **Mapbox or Google Maps API** (for location features)
+
+---
+
+## **📂 Project File Structure**
+```
+rent-analysis-app/
+├─ pages/
+│   ├─ index.js (Landing page)
+│   ├─ rent-estimate.js (Rent analysis form)
+│   ├─ admin/ (Super-admin pages)
+│   │   └─ dashboard.js
+│   ├─ org-admin/ (Tenant admin pages)
+│   │   └─ index.js
+│   ├─ auth/
+│   │   └─ signin.js
+│   ├─ api/
+│   │   ├─ rent-estimate.js
+│   │   ├─ generate-and-email-report.js
+│   │   ├─ ask-operator.js
+│   │   ├─ contact-sales.js
+│   │   └─ auth/
+│   │       └─ [...nextauth].js
+├─ components/
+│   ├─ RentMap.js
+│   ├─ AdBanner.js
+│   └─ ...
+├─ services/
+│   ├─ pdfGenerator.js
+│   ├─ emailService.js
+│   ├─ rentAdjustments.js
+│   ├─ rentAdjustmentsConfig.js
+│   ├─ aiOperator.js
+│   ├─ staticMap.js
+│   └─ db.js
+├─ .env.local
+└─ package.json
+```
+
+---
+
+## **🛠️ Key Features Breakdown**
+### 1️⃣ **Rent Analysis API**
+- **Front-End:** `/pages/rent-estimate.js`
+- **API Endpoint:** `/pages/api/rent-estimate.js`
+- Fetches rental comps and calculates estimated rent based on **address, bed/bath, condition, sqft, amenities**.
+
+### 2️⃣ **Maps Integration**
+- **Interactive Map:** `components/RentMap.js` (Uses **Mapbox API**)
+- **Static Map for PDFs:** `services/staticMap.js`
+
+### 3️⃣ **Rent Regulations & Adjustments**
+- **Rent Caps & Rent Control:** `services/rentRegulations.js`
+- **Automated rent adjustments based on:** **bedrooms, baths, amenities, location.**
+
+### 4️⃣ **AI-Powered Chat Assistant**
+- **LLM-based AI Operator:** `services/aiOperator.js`
+- **Handles:** **Data validation, disclaimers, summarization of rental comps.**
+
+### 5️⃣ **PDF & Email Generation**
+- **PDF Creation with Puppeteer:** `services/pdfGenerator.js`
+- **Email Sending with Nodemailer:** `services/emailService.js`
+
+### 6️⃣ **User Authentication**
+- **NextAuth.js-based Login:** `/pages/api/auth/[...nextauth].js`
+- **Google OAuth, Email/Password Authentication**
+- **Role-Based Access:** **Admin, Landlord, Multi-Tenant Organizations**
+
+### 7️⃣ **Multi-Tenant Support**
+- **Each user belongs to an Organization.**
+- **Admin Panel:** `/pages/admin/dashboard.js`
+- **Org-Specific Data Filters**
+
+### 8️⃣ **Subscription & Billing**
+- **Stripe Integration**
+- **Free, Pro, Enterprise Plans**
+- **Usage-Based Billing for Enterprise Users**
+- **Custom Stripe Checkout & Invoicing**
+
+---
+
+## **🚀 Next Steps**
+1. **Refine DB Schema:** Add tables for **Users, Organizations, Properties, Comps, Transactions.**
+2. **Security Enhancements:** Secure **API routes**, validate user roles.
+3. **Improve UI/UX:** Build a **dashboard** for **admins, landlords.**
+4. **Optimize Performance:** Implement **server-side rendering (SSR) & caching.**
+5. **Deployment:** Deploy via **Vercel, AWS, or DigitalOcean.**
+
+---
+
+This blueprint gives you **a solid foundation** to build a **fully functional rental analysis platform.** Let me know if you need **any refinements or code suggestions!** 🚀
