@@ -3,108 +3,326 @@ import os
 import sys
 import json
 import requests
+import math
+import re
 from dotenv import load_dotenv
+from urllib.parse import quote
+from datetime import datetime, timedelta
+import logging
 
 # Try to load environment variables from .env files
 try:
     load_dotenv()
     load_dotenv(".env.local")
 except Exception as e:
-    print(f"Warning: Could not load environment variables: {str(e)}", file=sys.stderr)
+    print(
+        f"Warning: Could not load environment variables: {str(e)}",
+        file=sys.stderr
+    )
 
-def find_comparable_properties(property_details):
+def calculate_distance(lat1, lon1, lat2, lon2):
     """
-    Find comparable rental properties using the Rentcast API.
-    Falls back to mock data if the API call fails.
+    Calculate the distance between two points using the Haversine formula.
+    Returns distance in miles.
     """
-    # Get API key from input data or environment
-    api_key = property_details.get("rentcastApiKey") or os.environ.get("RENTCAST_API_KEY")
+    # Convert latitude and longitude from degrees to radians
+    lat1_rad = math.radians(lat1)
+    lon1_rad = math.radians(lon1)
+    lat2_rad = math.radians(lat2)
+    lon2_rad = math.radians(lon2)
     
-    if not api_key:
-        print("Warning: No Rentcast API key found. Using mock data.", file=sys.stderr)
-        return generate_mock_comparables(property_details)
+    # Haversine formula
+    dlon = lon2_rad - lon1_rad
+    dlat = lat2_rad - lat1_rad
+    a = math.sin(dlat/2)**2 + math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(dlon/2)**2
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
     
+    # Earth radius in miles
+    radius = 3959
+    
+    # Calculate distance
+    distance = radius * c
+    
+    return round(distance, 1)
+
+def search_zillow_rentals(property_details):
+    """
+    Search Zillow for rental properties based on the provided details.
+    Returns a list of comparable properties.
+    """
     try:
         # Extract property details
         zip_code = property_details.get("zipCode", "")
         beds = property_details.get("beds", "")
         baths = property_details.get("baths", "")
-        property_type = property_details.get("propertyType", "")
+        
+        # Get RapidAPI key from environment
+        api_key = os.environ.get("RAPIDAPI_KEY")
+        
+        if not api_key:
+            print("Warning: No RapidAPI key found for Zillow search.", file=sys.stderr)
+            return []
         
         # Prepare the API request
-        url = "https://api.rentcast.io/v1/properties"
+        url = "https://zillow-com1.p.rapidapi.com/propertyExtendedSearch"
         headers = {
-            "X-API-KEY": api_key,
-            "Content-Type": "application/json"
+            "X-RapidAPI-Key": api_key,
+            "X-RapidAPI-Host": "zillow-com1.p.rapidapi.com"
         }
         
         # Build the query parameters
-        params = {}
-        if zip_code:
-            params["zipCode"] = zip_code
-        if beds:
-            params["bedrooms"] = beds
-        if baths:
-            params["bathrooms"] = baths
-        if property_type:
-            params["propertyType"] = property_type
+        params = {
+            "location": zip_code,
+            "home_type": "Houses",
+            "isRentalOnly": "true"
+        }
         
-        print(f"DEBUG: Making API request to {url} with params: {params}", 
-              file=sys.stderr)
+        print(f"DEBUG: Making Zillow API request with params: {params}", file=sys.stderr)
         
         # Make the API request
         response = requests.get(url, headers=headers, params=params)
         
         # Check if the request was successful
         if response.status_code == 200:
-            # The API returns an array of properties directly
-            properties = response.json()
-            print(f"DEBUG: API response: {json.dumps(properties)[:500]}...", 
-                  file=sys.stderr)
+            data = response.json()
+            print(f"DEBUG: Zillow API response: {json.dumps(data)[:500]}...", file=sys.stderr)
             
-            # Check if properties is a list with items
-            if isinstance(properties, list) and properties:
+            # Extract properties from the response
+            properties = data.get("props", [])
+            
+            if properties:
                 formatted_comps = []
+                
+                # Get the subject property coordinates
+                subject_lat = property_details.get("latitude")
+                subject_lon = property_details.get("longitude")
+                
                 for prop in properties[:3]:  # Limit to 3 comparables
-                    # Calculate rent if rentZestimate is not available
-                    rent = 0
-                    if "rentZestimate" in prop and prop["rentZestimate"]:
-                        rent = prop["rentZestimate"]
-                    else:
-                        rent = calculate_rent_estimate(prop)
+                    # Calculate distance if coordinates are available
+                    distance = 0
+                    if subject_lat and subject_lon and prop.get("latitude") and prop.get("longitude"):
+                        distance = calculate_distance(
+                            subject_lat, subject_lon,
+                            prop.get("latitude"), prop.get("longitude")
+                        )
+                    
+                    # Extract rent
+                    rent = prop.get("price", 0)
+                    if isinstance(rent, str):
+                        # Remove non-numeric characters and convert to float
+                        rent = float(re.sub(r'[^\d.]', '', rent)) if re.sub(r'[^\d.]', '', rent) else 0
                     
                     formatted_comp = {
-                        "address": prop.get("formattedAddress", "Unknown"),
+                        "address": prop.get("address", "Unknown"),
                         "beds": prop.get("bedrooms", 0),
                         "baths": prop.get("bathrooms", 0),
-                        "sqft": prop.get("squareFootage", 0),
+                        "sqft": prop.get("livingArea", 0),
                         "rent": rent,
                         "yearBuilt": prop.get("yearBuilt", "Unknown"),
-                        "distance": 0,  # Not provided by this endpoint
-                        "amenities": [],  # Not provided by this endpoint
-                        "propertyType": prop.get("propertyType", "Unknown"),
-                        "source": "Rentcast API"
+                        "distance": distance,
+                        "amenities": [],
+                        "propertyType": prop.get("homeType", "Unknown"),
+                        "source": "Zillow",
+                        "url": f"https://www.zillow.com/homedetails/{prop.get('zpid')}_zpid/"
                     }
                     formatted_comps.append(formatted_comp)
+                
                 return formatted_comps
-            else:
-                print(f"DEBUG: No properties found in API response. Properties: {properties}", 
-                      file=sys.stderr)
         else:
-            print(f"DEBUG: API response status code: {response.status_code}", 
-                  file=sys.stderr)
-            print(f"DEBUG: API response text: {response.text}", 
-                  file=sys.stderr)
+            print(f"DEBUG: Zillow API response status code: {response.status_code}", file=sys.stderr)
+            print(f"DEBUG: Zillow API response text: {response.text}", file=sys.stderr)
         
-        # If the API call failed or returned no properties, fall back to mock data
-        print(f"API call failed with status {response.status_code}. Using mock data.", 
-              file=sys.stderr)
-        return generate_mock_comparables(property_details)
+        return []
     
     except Exception as e:
-        print(f"Error calling Rentcast API: {str(e)}. Using mock data.", 
-              file=sys.stderr)
+        print(f"Error searching Zillow: {str(e)}", file=sys.stderr)
+        return []
+
+def find_comparable_properties(property_details):
+    """
+    Find comparable rental properties using the Rentcast API and Zillow.
+    Falls back to mock data if the API calls fail.
+    """
+    # Get API key from input data or environment
+    api_key = property_details.get("rentcastApiKey") or os.environ.get("RENTCAST_API_KEY")
+    
+    # Clean the API key to remove any trailing whitespace or special characters
+    if api_key:
+        api_key = api_key.strip()
+        print(f"DEBUG: Using Rentcast API key: {api_key[:5]}...{api_key[-5:]}", file=sys.stderr)
+    else:
+        print("ERROR: No Rentcast API key found", file=sys.stderr)
         return generate_mock_comparables(property_details)
+    
+    # Initialize list to store all comparables
+    all_comparables = []
+    
+    # Try to get the subject property coordinates using Google Maps API
+    subject_address = property_details.get("address", "")
+    subject_zip = property_details.get("zipCode", "")
+    
+    # Store the geocoded coordinates
+    subject_lat = property_details.get("latitude")
+    subject_lon = property_details.get("longitude")
+    
+    # If coordinates aren't provided, try to geocode the address
+    if (not subject_lat or not subject_lon) and subject_address and subject_zip:
+        try:
+            google_api_key = os.environ.get("NEXT_PUBLIC_GOOGLE_MAPS_API_KEY")
+            if google_api_key:
+                # Make sure the API key doesn't have any trailing whitespace or special characters
+                google_api_key = google_api_key.strip()
+                
+                # Format the address properly for geocoding
+                full_address = f"{subject_address}, {subject_zip}"
+                geocode_url = f"https://maps.googleapis.com/maps/api/geocode/json?address={quote(full_address)}&key={google_api_key}"
+                print(f"DEBUG: Geocoding address: {full_address}", file=sys.stderr)
+                geocode_response = requests.get(geocode_url)
+                
+                if geocode_response.status_code == 200:
+                    geocode_data = geocode_response.json()
+                    print(f"DEBUG: Geocode response status: {geocode_data.get('status')}", file=sys.stderr)
+                    
+                    if geocode_data.get("status") == "REQUEST_DENIED":
+                        print(f"ERROR: Geocoding request denied. Error message: {geocode_data.get('error_message')}", file=sys.stderr)
+                    elif geocode_data.get("results") and len(geocode_data["results"]) > 0:
+                        location = geocode_data["results"][0]["geometry"]["location"]
+                        subject_lat = location["lat"]
+                        subject_lon = location["lng"]
+                        
+                        # Update the property details with the geocoded coordinates
+                        property_details["latitude"] = subject_lat
+                        property_details["longitude"] = subject_lon
+                        
+                        print(f"DEBUG: Successfully geocoded address to: {subject_lat}, {subject_lon}", file=sys.stderr)
+                        
+                        # Also extract and store the formatted address and zip code
+                        formatted_address = geocode_data["results"][0].get("formatted_address", "")
+                        if formatted_address:
+                            print(f"DEBUG: Formatted address: {formatted_address}", file=sys.stderr)
+                            
+                            # Try to extract zip code from formatted address components
+                            for component in geocode_data["results"][0].get("address_components", []):
+                                if "postal_code" in component.get("types", []):
+                                    extracted_zip = component.get("long_name")
+                                    if extracted_zip:
+                                        print(f"DEBUG: Extracted zip code: {extracted_zip}", file=sys.stderr)
+                                        property_details["zipCode"] = extracted_zip
+                    else:
+                        print(f"ERROR: No geocoding results found for address: {full_address}", file=sys.stderr)
+                else:
+                    print(f"ERROR: Geocoding failed with status code: {geocode_response.status_code}", file=sys.stderr)
+                    print(f"Response: {geocode_response.text}", file=sys.stderr)
+            else:
+                print("ERROR: No Google Maps API key found in environment variables", file=sys.stderr)
+        except Exception as e:
+            print(f"ERROR: Exception during geocoding: {str(e)}", file=sys.stderr)
+    
+    # First, try to get comparables from Rentcast API
+    if api_key:
+        try:
+            # Extract property details
+            zip_code = property_details.get("zipCode", "")
+            beds = property_details.get("beds", "")
+            baths = property_details.get("baths", "")
+            property_type = property_details.get("propertyType", "")
+            
+            # Prepare the API request
+            url = "https://api.rentcast.io/v1/properties"
+            headers = {
+                "X-API-KEY": api_key,
+                "Content-Type": "application/json"
+            }
+            
+            # Build the query parameters
+            params = {}
+            if zip_code:
+                params["zipCode"] = zip_code
+            if beds:
+                params["bedrooms"] = beds
+            if baths:
+                params["bathrooms"] = baths
+            if property_type:
+                params["propertyType"] = property_type
+            
+            print(f"DEBUG: Making API request to {url} with params: {params}", 
+                  file=sys.stderr)
+            
+            # Make the API request
+            response = requests.get(url, headers=headers, params=params)
+            
+            # Check if the request was successful
+            if response.status_code == 200:
+                # The API returns an array of properties directly
+                properties = response.json()
+                print(f"DEBUG: API response: {json.dumps(properties)[:500]}...", 
+                      file=sys.stderr)
+                
+                # Check if properties is a list with items
+                if isinstance(properties, list) and properties:
+                    for prop in properties[:5]:  # Increased from 3 to 5 to get more options
+                        # Calculate rent if rentZestimate is not available
+                        rent = 0
+                        if "rentZestimate" in prop and prop["rentZestimate"]:
+                            rent = prop["rentZestimate"]
+                        elif "price" in prop and prop["price"]:
+                            rent = prop["price"]
+                        else:
+                            rent = calculate_rent_estimate(prop)
+                        
+                        # Calculate distance if coordinates are available
+                        distance = 0
+                        if subject_lat and subject_lon and prop.get("latitude") and prop.get("longitude"):
+                            distance = calculate_distance(
+                                subject_lat, subject_lon,
+                                prop["latitude"], prop["longitude"]
+                            )
+                        
+                        # Extract amenities if available
+                        amenities = []
+                        if "amenities" in prop and prop["amenities"]:
+                            amenities = prop["amenities"]
+                        
+                        formatted_comp = {
+                            "address": prop.get("formattedAddress", "Unknown"),
+                            "beds": prop.get("bedrooms", 0),
+                            "baths": prop.get("bathrooms", 0),
+                            "sqft": prop.get("squareFootage", 0),
+                            "rent": rent,
+                            "yearBuilt": prop.get("yearBuilt", "Unknown"),
+                            "distance": distance,
+                            "amenities": amenities,
+                            "propertyType": prop.get("propertyType", "Unknown"),
+                            "source": "Rentcast API",
+                            "latitude": prop.get("latitude"),
+                            "longitude": prop.get("longitude")
+                        }
+                        all_comparables.append(formatted_comp)
+                else:
+                    print(f"No properties found in Rentcast API response for zip code {zip_code}", file=sys.stderr)
+            else:
+                print(f"DEBUG: Rentcast API response status code: {response.status_code}", file=sys.stderr)
+                print(f"DEBUG: Rentcast API response text: {response.text}", file=sys.stderr)
+        except Exception as e:
+            print(f"Error calling Rentcast API: {str(e)}. Will try other sources.", file=sys.stderr)
+    
+    # Next, try to get comparables from Zillow
+    zillow_comps = search_zillow_rentals(property_details)
+    all_comparables.extend(zillow_comps)
+    
+    # If we have enough comparables, return them
+    if len(all_comparables) >= 3:
+        # Sort by distance
+        all_comparables.sort(key=lambda x: x["distance"])
+        return all_comparables[:5]  # Return up to 5 comparables
+    
+    # If we don't have enough comparables, generate mock data
+    if len(all_comparables) == 0:
+        print("No comparables found from APIs. Using mock data.", file=sys.stderr)
+        mock_comps = generate_mock_comparables(property_details)
+        all_comparables.extend(mock_comps)
+    
+    return all_comparables[:5]  # Return at most 5 comparables
 
 def calculate_rent_estimate(property_data):
     """
@@ -154,7 +372,9 @@ def generate_mock_comparables(property_details):
         "distance": 0.5,
         "amenities": ["Parking", "Dishwasher"],
         "propertyType": property_type,
-        "source": "Mock Data"
+        "source": "Mock Data",
+        "latitude": None,
+        "longitude": None
     })
     
     # Comparable 2: Slightly larger, more amenities, higher price
@@ -168,7 +388,9 @@ def generate_mock_comparables(property_details):
         "distance": 0.8,
         "amenities": ["Parking", "Dishwasher", "Pool", "Gym"],
         "propertyType": property_type,
-        "source": "Mock Data"
+        "source": "Mock Data",
+        "latitude": None,
+        "longitude": None
     })
     
     # Comparable 3: Similar overall, different mix of features
@@ -182,10 +404,121 @@ def generate_mock_comparables(property_details):
         "distance": 1.2,
         "amenities": ["Washer/Dryer", "Balcony", "Parking"],
         "propertyType": property_type,
-        "source": "Mock Data"
+        "source": "Mock Data",
+        "latitude": None,
+        "longitude": None
     })
     
     return comparables
+
+def get_market_trends(property_details):
+    """
+    Get market trends data from RentCast API based on zip code.
+    """
+    # Check if we have an API key
+    api_key = os.environ.get("RENTCAST_API_KEY")
+    if not api_key:
+        print("Warning: No RentCast API key found. Skipping market trends.", 
+              file=sys.stderr)
+        return None
+    
+    # Clean the API key
+    api_key = api_key.strip()
+
+    # Get the zip code from property details
+    zip_code = property_details.get("zipCode")
+    if not zip_code:
+        print("Warning: No zip code provided. Skipping market trends.", 
+              file=sys.stderr)
+        return None
+
+    # Construct the API request
+    url = "https://api.rentcast.io/v1/markets"
+    headers = {
+        "accept": "application/json",
+        "X-API-KEY": api_key
+    }
+    params = {
+        "zipCode": zip_code,
+        "propertyType": property_details.get("propertyType", ""),
+        "bedrooms": property_details.get("beds", ""),
+        "limit": 1
+    }
+
+    # Make the API request
+    try:
+        print(f"DEBUG: Making API request to {url} with params: {params}", 
+              file=sys.stderr)
+        response = requests.get(url, headers=headers, params=params)
+        
+        # Check for API errors
+        if response.status_code != 200:
+            print(f"ERROR: Market trends API returned status code {response.status_code}", file=sys.stderr)
+            print(f"Response: {response.text}", file=sys.stderr)
+            return None
+            
+        data = response.json()
+        print(f"DEBUG: API response: {json.dumps(data, indent=2)}", file=sys.stderr)
+        return data
+    except Exception as e:
+        print(f"ERROR: Error fetching market trends: {e}", file=sys.stderr)
+        return None
+
+def get_historical_rental_data(property_details):
+    """
+    Get historical rental data for a property from RentCast API.
+    """
+    # Check if we have an API key
+    api_key = os.environ.get("RENTCAST_API_KEY")
+    if not api_key:
+        print("Warning: No RentCast API key found. Skipping historical data.", 
+              file=sys.stderr)
+        return None
+    
+    # Clean the API key
+    api_key = api_key.strip()
+
+    # Get the required property details
+    address = property_details.get("address")
+    if not address:
+        print("Warning: No address provided. Skipping historical data.", 
+              file=sys.stderr)
+        return None
+
+    # Construct the API request
+    url = "https://api.rentcast.io/v1/avm/rent/long-term"
+    headers = {
+        "accept": "application/json",
+        "X-API-KEY": api_key
+    }
+    
+    # Prepare parameters for the API request
+    params = {
+        "address": address,
+        "propertyType": property_details.get("propertyType", ""),
+        "bedrooms": property_details.get("beds", ""),
+        "bathrooms": property_details.get("baths", ""),
+        "squareFootage": property_details.get("squareFeet", "")
+    }
+
+    # Make the API request
+    try:
+        print(f"DEBUG: Making API request to {url} with params: {params}", 
+              file=sys.stderr)
+        response = requests.get(url, headers=headers, params=params)
+        
+        # Check for API errors
+        if response.status_code != 200:
+            print(f"ERROR: Historical data API returned status code {response.status_code}", file=sys.stderr)
+            print(f"Response: {response.text}", file=sys.stderr)
+            return None
+            
+        data = response.json()
+        print(f"DEBUG: API response: {json.dumps(data, indent=2)}", file=sys.stderr)
+        return data
+    except Exception as e:
+        print(f"ERROR: Error fetching historical rental data: {e}", file=sys.stderr)
+        return None
 
 def analyze_property(property_details):
     """
@@ -194,6 +527,12 @@ def analyze_property(property_details):
     """
     # Find comparable properties
     comparables = find_comparable_properties(property_details)
+    
+    # Get market trends data
+    market_trends = get_market_trends(property_details)
+    
+    # Get historical rental data
+    historical_data = get_historical_rental_data(property_details)
     
     # Calculate average rent from comparables
     avg_rent = sum(comp["rent"] for comp in comparables) / len(comparables)
@@ -219,7 +558,8 @@ def analyze_property(property_details):
         influencing_factors.append(amenities_text)
     
     # Generate market comparison
-    data_source = comparables[0].get("source", "Mock Data")
+    data_sources = set(comp.get("source", "Mock Data") for comp in comparables)
+    data_source = ", ".join(data_sources)
     market_comparison = (
         f"Based on {len(comparables)} comparable properties in the area "
         f"(using {data_source}), the average rent is ${avg_rent:.2f} per month. "
@@ -228,6 +568,60 @@ def analyze_property(property_details):
         f"priced compared to similar properties in the area."
     )
     
+    # Add market trends information if available
+    market_insights = []
+    if market_trends and "rentalData" in market_trends:
+        rental_data = market_trends["rentalData"]
+        market_insights.append(
+            f"The average rent in {property_details.get('zipCode', 'your area')} "
+            f"is ${rental_data.get('averageRent', 0):,} with a median of "
+            f"${rental_data.get('medianRent', 0):,}."
+        )
+        
+        # Add days on market info
+        avg_days = rental_data.get("averageDaysOnMarket")
+        if avg_days:
+            market_insights.append(
+                f"Properties in this area stay on the market for an average of {avg_days} days."
+            )
+        
+        # Add info about rental inventory
+        new_listings = rental_data.get("newListings")
+        total_listings = rental_data.get("totalListings")
+        if new_listings and total_listings:
+            market_insights.append(
+                f"There are currently {total_listings} rental listings in this area, "
+                f"with {new_listings} new listings in the past month."
+            )
+        
+        # Add historical trend information
+        if "history" in rental_data:
+            history = rental_data["history"]
+            months = sorted(history.keys())
+            if len(months) >= 2:
+                oldest = history[months[0]]
+                newest = history[months[-1]]
+                if "averageRent" in oldest and "averageRent" in newest:
+                    old_rent = oldest["averageRent"]
+                    new_rent = newest["averageRent"]
+                    change = ((new_rent - old_rent) / old_rent) * 100
+                    direction = "increased" if change > 0 else "decreased"
+                    market_insights.append(
+                        f"Rents have {direction} by {abs(change):.1f}% over the past "
+                        f"{len(months)} months in this area."
+                    )
+    
+    # Add historical property data if available
+    if historical_data:
+        estimated_rent = historical_data.get("rent")
+        rent_range = historical_data.get("rentRangeLow", 0), historical_data.get("rentRangeHigh", 0)
+        
+        if estimated_rent:
+            market_insights.append(
+                f"Based on historical data, the estimated rent for this specific property "
+                f"is ${estimated_rent:,}, with a range of ${rent_range[0]:,} to ${rent_range[1]:,}."
+            )
+    
     # Generate recommendations
     recommendations = [
         "Consider highlighting unique features in your listing",
@@ -235,6 +629,22 @@ def analyze_property(property_details):
         "Take high-quality photos to showcase the property's best features",
         "Consider offering incentives for longer lease terms"
     ]
+    
+    # Add market-based recommendations
+    if market_trends and "rentalData" in market_trends:
+        rental_data = market_trends["rentalData"]
+        avg_days = rental_data.get("averageDaysOnMarket", 0)
+        
+        if avg_days > 60:
+            recommendations.append(
+                "Properties in this area take longer to rent. Consider pricing competitively "
+                "or offering move-in specials to attract tenants."
+            )
+        elif avg_days < 30:
+            recommendations.append(
+                "Properties in this area rent quickly. You may be able to command a premium "
+                "price, especially if your property has desirable features."
+            )
     
     # If the property is older, add a recommendation about updates
     if property_details.get("yearBuilt") and property_details.get("yearBuilt").isdigit():
@@ -247,6 +657,52 @@ def analyze_property(property_details):
             )
             recommendations.append(update_rec)
     
+    # Create Google Maps and Street View URLs
+    maps_data = {}
+    street_view_data = {}
+    
+    # Get coordinates from property details or historical data
+    latitude = property_details.get("latitude")
+    longitude = property_details.get("longitude")
+    
+    if not latitude and not longitude and historical_data:
+        latitude = historical_data.get("latitude")
+        longitude = historical_data.get("longitude")
+    
+    if latitude and longitude:
+        # Google Maps URL
+        maps_url = f"https://www.google.com/maps?q={latitude},{longitude}"
+        maps_data = {
+            "url": maps_url,
+            "latitude": latitude,
+            "longitude": longitude
+        }
+        
+        # Google Street View URL
+        # Parameters:
+        # - size: image size (max 640x640 for free tier)
+        # - location: lat,lng
+        # - fov: field of view (zoom level, 90 is default)
+        # - heading: camera direction in degrees (0 is north, 90 is east)
+        # - pitch: camera angle (-90 to 90, 0 is horizontal)
+        street_view_url = (
+            f"https://maps.googleapis.com/maps/api/streetview?"
+            f"size=600x400&location={latitude},{longitude}"
+            f"&fov=90&heading=270&pitch=0"
+        )
+        
+        # Add API key if available
+        google_api_key = os.environ.get("NEXT_PUBLIC_GOOGLE_MAPS_API_KEY")
+        if google_api_key:
+            street_view_url += f"&key={google_api_key}"
+        
+        street_view_data = {
+            "url": street_view_url,
+            "latitude": latitude,
+            "longitude": longitude,
+            "address": property_details.get("address", "")
+        }
+    
     # Create the analysis result
     analysis = {
         "rentRange": {
@@ -256,10 +712,41 @@ def analyze_property(property_details):
         },
         "influencingFactors": influencing_factors,
         "marketComparison": market_comparison,
+        "marketInsights": market_insights,
         "recommendations": recommendations,
         "comparableProperties": comparables,
-        "dataSource": data_source
+        "dataSource": data_source,
+        "mapData": {
+            "center": {
+                "lat": latitude,
+                "lng": longitude
+            },
+            "comparables": [
+                {
+                    "lat": comp.get("latitude"),
+                    "lng": comp.get("longitude"),
+                    "address": comp.get("address"),
+                    "rent": comp.get("rent"),
+                    "distance": comp.get("distance")
+                } for comp in comparables if comp.get("latitude") and comp.get("longitude")
+            ]
+        }
     }
+    
+    # Add maps and street view data if available
+    if maps_data:
+        analysis["mapsData"] = maps_data
+    
+    if street_view_data:
+        analysis["streetViewData"] = street_view_data
+    
+    # Add market trends data if available
+    if market_trends:
+        analysis["marketTrends"] = market_trends
+    
+    # Add historical data if available
+    if historical_data:
+        analysis["historicalData"] = historical_data
     
     return analysis
 
