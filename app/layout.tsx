@@ -2,6 +2,7 @@ import { Inter } from 'next/font/google'
 import { Providers } from './providers'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import './globals.css'
+import './styles/print.css'
 
 const inter = Inter({ subsets: ['latin'] })
 
