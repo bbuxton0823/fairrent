@@ -122,6 +122,28 @@ To use the real data features, you'll need a Rentcast API key:
 2. Navigate to your account settings to get your API key
 3. Add the key to your `.env.local` file
 
+## Setting Up Google Maps API Key
+
+The application uses Google Maps API for geocoding addresses. To ensure this functionality works correctly:
+
+1. Go to the [Google Cloud Console](https://console.cloud.google.com/)
+2. Create a new project or select an existing one
+3. Navigate to "APIs & Services" > "Library"
+4. Search for and enable the following APIs:
+   - Geocoding API
+   - Maps JavaScript API
+   - Street View API
+5. Go to "APIs & Services" > "Credentials"
+6. Click "Create Credentials" > "API Key"
+7. Copy your new API key
+8. Add the key to your `.env.local` file:
+   ```
+   NEXT_PUBLIC_GOOGLE_MAPS_API_KEY=your_google_maps_api_key
+   ```
+9. For production, restrict the API key to only the APIs you're using and set HTTP referrer restrictions
+
+**Important**: If you see "REQUEST_DENIED" errors in the logs, it means your API key doesn't have the Geocoding API enabled. Make sure to enable all required APIs listed above.
+
 ## License
 
 MIT

@@ -10,15 +10,29 @@ from urllib.parse import quote
 from datetime import datetime, timedelta
 import logging
 
+# Set up logging
+log_dir = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 
+    'logs'
+)
+log_file = os.path.join(log_dir, 'rentcast_agent.log')
+os.makedirs(os.path.dirname(log_file), exist_ok=True)
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(log_file),
+        logging.StreamHandler(sys.stderr)
+    ]
+)
+logger = logging.getLogger('rentcast_agent')
+
 # Try to load environment variables from .env files
 try:
     load_dotenv()
     load_dotenv(".env.local")
 except Exception as e:
-    print(
-        f"Warning: Could not load environment variables: {str(e)}",
-        file=sys.stderr
-    )
+    logger.error(f"Could not load environment variables: {str(e)}")
 
 def calculate_distance(lat1, lon1, lat2, lon2):
     """
@@ -149,180 +163,179 @@ def find_comparable_properties(property_details):
     # Clean the API key to remove any trailing whitespace or special characters
     if api_key:
         api_key = api_key.strip()
-        print(f"DEBUG: Using Rentcast API key: {api_key[:5]}...{api_key[-5:]}", file=sys.stderr)
+        logger.info(f"Using Rentcast API key: {api_key[:5]}...{api_key[-5:]}")
     else:
-        print("ERROR: No Rentcast API key found", file=sys.stderr)
+        logger.error("No Rentcast API key found")
         return generate_mock_comparables(property_details)
     
     # Initialize list to store all comparables
     all_comparables = []
     
-    # Try to get the subject property coordinates using Google Maps API
-    subject_address = property_details.get("address", "")
-    subject_zip = property_details.get("zipCode", "")
-    
-    # Store the geocoded coordinates
+    # Get the subject property coordinates
     subject_lat = property_details.get("latitude")
     subject_lon = property_details.get("longitude")
     
     # If coordinates aren't provided, try to geocode the address
-    if (not subject_lat or not subject_lon) and subject_address and subject_zip:
-        try:
-            google_api_key = os.environ.get("NEXT_PUBLIC_GOOGLE_MAPS_API_KEY")
-            if google_api_key:
-                # Make sure the API key doesn't have any trailing whitespace or special characters
-                google_api_key = google_api_key.strip()
+    if not subject_lat or not subject_lon:
+        logger.warning("No coordinates found in property details, attempting to geocode")
+        location_data = geocode_address(property_details)
+        if location_data:
+            subject_lat = location_data.get("latitude")
+            subject_lon = location_data.get("longitude")
+            # Update the property details with the geocoded data
+            property_details.update(location_data)
+        else:
+            logger.error("Failed to geocode property address")
+            # Continue with analysis but note the error
+            property_details["geocoding_error"] = True
+    
+    # Log the coordinates we're using
+    logger.info(f"Using coordinates: {subject_lat}, {subject_lon}")
+    
+    # Get the zip code and other location data
+    zip_code = property_details.get("zip_code") or property_details.get("zipCode")
+    city = property_details.get("city", "")
+    state = property_details.get("state", "")
+    
+    logger.info(f"Location data: ZIP={zip_code}, City={city}, State={state}")
+    
+    # Try to get comparables from Rentcast API
+    try:
+        # Extract property details
+        beds = property_details.get("beds", "")
+        baths = property_details.get("baths", "")
+        property_type = property_details.get("propertyType", "")
+        
+        # Prepare the API request
+        url = "https://api.rentcast.io/v1/properties"
+        headers = {
+            "X-API-KEY": api_key,
+            "Content-Type": "application/json"
+        }
+        
+        # Build the query parameters - prioritize using location data
+        params = {}
+        
+        # First try to use zip code
+        if zip_code:
+            params["zipCode"] = zip_code
+        # If no zip code, try city and state
+        elif city and state:
+            params["city"] = city
+            params["state"] = state
+        # If only city is available, use it (state might be inferred)
+        elif city:
+            params["city"] = city
+        
+        # Add property details to the query
+        if beds:
+            params["bedrooms"] = beds
+        if baths:
+            params["bathrooms"] = baths
+        if property_type:
+            params["propertyType"] = property_type
+        
+        logger.info(f"Making API request to {url} with params: {params}")
+        
+        # Make the API request
+        response = requests.get(url, headers=headers, params=params)
+        
+        # Check if the request was successful
+        if response.status_code == 200:
+            # The API returns an array of properties directly
+            properties = response.json()
+            logger.debug(f"API response: {json.dumps(properties)[:500]}...")
+            
+            # Check if properties is a list with items
+            if isinstance(properties, list) and properties:
+                logger.info(f"Found {len(properties)} properties from Rentcast API")
                 
-                # Format the address properly for geocoding
-                full_address = f"{subject_address}, {subject_zip}"
-                geocode_url = f"https://maps.googleapis.com/maps/api/geocode/json?address={quote(full_address)}&key={google_api_key}"
-                print(f"DEBUG: Geocoding address: {full_address}", file=sys.stderr)
-                geocode_response = requests.get(geocode_url)
-                
-                if geocode_response.status_code == 200:
-                    geocode_data = geocode_response.json()
-                    print(f"DEBUG: Geocode response status: {geocode_data.get('status')}", file=sys.stderr)
-                    
-                    if geocode_data.get("status") == "REQUEST_DENIED":
-                        print(f"ERROR: Geocoding request denied. Error message: {geocode_data.get('error_message')}", file=sys.stderr)
-                    elif geocode_data.get("results") and len(geocode_data["results"]) > 0:
-                        location = geocode_data["results"][0]["geometry"]["location"]
-                        subject_lat = location["lat"]
-                        subject_lon = location["lng"]
-                        
-                        # Update the property details with the geocoded coordinates
-                        property_details["latitude"] = subject_lat
-                        property_details["longitude"] = subject_lon
-                        
-                        print(f"DEBUG: Successfully geocoded address to: {subject_lat}, {subject_lon}", file=sys.stderr)
-                        
-                        # Also extract and store the formatted address and zip code
-                        formatted_address = geocode_data["results"][0].get("formatted_address", "")
-                        if formatted_address:
-                            print(f"DEBUG: Formatted address: {formatted_address}", file=sys.stderr)
-                            
-                            # Try to extract zip code from formatted address components
-                            for component in geocode_data["results"][0].get("address_components", []):
-                                if "postal_code" in component.get("types", []):
-                                    extracted_zip = component.get("long_name")
-                                    if extracted_zip:
-                                        print(f"DEBUG: Extracted zip code: {extracted_zip}", file=sys.stderr)
-                                        property_details["zipCode"] = extracted_zip
+                # Process the properties to create comparable objects
+                comparable_count = 0
+                for prop in properties:
+                    # Calculate rent if rentZestimate is not available
+                    rent = 0
+                    if "rentZestimate" in prop and prop["rentZestimate"]:
+                        rent = prop["rentZestimate"]
+                    elif "price" in prop and prop["price"]:
+                        rent = prop["price"]
                     else:
-                        print(f"ERROR: No geocoding results found for address: {full_address}", file=sys.stderr)
-                else:
-                    print(f"ERROR: Geocoding failed with status code: {geocode_response.status_code}", file=sys.stderr)
-                    print(f"Response: {geocode_response.text}", file=sys.stderr)
-            else:
-                print("ERROR: No Google Maps API key found in environment variables", file=sys.stderr)
-        except Exception as e:
-            print(f"ERROR: Exception during geocoding: {str(e)}", file=sys.stderr)
-    
-    # First, try to get comparables from Rentcast API
-    if api_key:
-        try:
-            # Extract property details
-            zip_code = property_details.get("zipCode", "")
-            beds = property_details.get("beds", "")
-            baths = property_details.get("baths", "")
-            property_type = property_details.get("propertyType", "")
-            
-            # Prepare the API request
-            url = "https://api.rentcast.io/v1/properties"
-            headers = {
-                "X-API-KEY": api_key,
-                "Content-Type": "application/json"
-            }
-            
-            # Build the query parameters
-            params = {}
-            if zip_code:
-                params["zipCode"] = zip_code
-            if beds:
-                params["bedrooms"] = beds
-            if baths:
-                params["bathrooms"] = baths
-            if property_type:
-                params["propertyType"] = property_type
-            
-            print(f"DEBUG: Making API request to {url} with params: {params}", 
-                  file=sys.stderr)
-            
-            # Make the API request
-            response = requests.get(url, headers=headers, params=params)
-            
-            # Check if the request was successful
-            if response.status_code == 200:
-                # The API returns an array of properties directly
-                properties = response.json()
-                print(f"DEBUG: API response: {json.dumps(properties)[:500]}...", 
-                      file=sys.stderr)
-                
-                # Check if properties is a list with items
-                if isinstance(properties, list) and properties:
-                    for prop in properties[:5]:  # Increased from 3 to 5 to get more options
-                        # Calculate rent if rentZestimate is not available
-                        rent = 0
-                        if "rentZestimate" in prop and prop["rentZestimate"]:
-                            rent = prop["rentZestimate"]
-                        elif "price" in prop and prop["price"]:
-                            rent = prop["price"]
+                        rent = calculate_rent_estimate(prop)
+                    
+                    # Skip properties with no rent data
+                    if not rent:
+                        continue
+                    
+                    # Create a comparable object
+                    comparable = {
+                        "address": prop.get("formattedAddress", ""),
+                        "rent": rent,
+                        "bedrooms": prop.get("bedrooms", 0),
+                        "bathrooms": prop.get("bathrooms", 0),
+                        "squareFootage": prop.get("squareFootage", 0),
+                        "yearBuilt": prop.get("yearBuilt", 0),
+                        "latitude": prop.get("latitude", 0),
+                        "longitude": prop.get("longitude", 0),
+                        "source": "Rentcast",
+                        "distance": 0,
+                        "similarity": 0.9,  # Default similarity score
+                        "adjustedRent": rent,  # Default to the same as rent
+                        "credibility": 0.9,  # Default credibility score
+                        "propertyType": prop.get("propertyType", "")
+                    }
+                    
+                    # Calculate distance if coordinates are available
+                    if subject_lat and subject_lon and prop.get("latitude") and prop.get("longitude"):
+                        distance = calculate_distance(
+                            subject_lat, subject_lon,
+                            prop["latitude"], prop["longitude"]
+                        )
+                        comparable["distance"] = distance
+                        
+                        # Adjust similarity based on distance
+                        if distance < 1:
+                            comparable["similarity"] = 0.95
+                        elif distance < 3:
+                            comparable["similarity"] = 0.9
+                        elif distance < 5:
+                            comparable["similarity"] = 0.85
                         else:
-                            rent = calculate_rent_estimate(prop)
-                        
-                        # Calculate distance if coordinates are available
-                        distance = 0
-                        if subject_lat and subject_lon and prop.get("latitude") and prop.get("longitude"):
-                            distance = calculate_distance(
-                                subject_lat, subject_lon,
-                                prop["latitude"], prop["longitude"]
-                            )
-                        
-                        # Extract amenities if available
-                        amenities = []
-                        if "amenities" in prop and prop["amenities"]:
-                            amenities = prop["amenities"]
-                        
-                        formatted_comp = {
-                            "address": prop.get("formattedAddress", "Unknown"),
-                            "beds": prop.get("bedrooms", 0),
-                            "baths": prop.get("bathrooms", 0),
-                            "sqft": prop.get("squareFootage", 0),
-                            "rent": rent,
-                            "yearBuilt": prop.get("yearBuilt", "Unknown"),
-                            "distance": distance,
-                            "amenities": amenities,
-                            "propertyType": prop.get("propertyType", "Unknown"),
-                            "source": "Rentcast API",
-                            "latitude": prop.get("latitude"),
-                            "longitude": prop.get("longitude")
-                        }
-                        all_comparables.append(formatted_comp)
-                else:
-                    print(f"No properties found in Rentcast API response for zip code {zip_code}", file=sys.stderr)
+                            comparable["similarity"] = 0.8
+                    
+                    # Add the comparable to our list
+                    all_comparables.append(comparable)
+                    comparable_count += 1
+                    
+                    # Limit to 5 comparables
+                    if comparable_count >= 5:
+                        break
+                
+                logger.info(f"Found {comparable_count} comparable properties")
             else:
-                print(f"DEBUG: Rentcast API response status code: {response.status_code}", file=sys.stderr)
-                print(f"DEBUG: Rentcast API response text: {response.text}", file=sys.stderr)
-        except Exception as e:
-            print(f"Error calling Rentcast API: {str(e)}. Will try other sources.", file=sys.stderr)
+                logger.warning("No properties found in Rentcast API response")
+        else:
+            logger.error(f"Rentcast API request failed with status code: {response.status_code}")
+            logger.error(f"Response: {response.text}")
+    except Exception as e:
+        logger.exception(f"Exception during Rentcast API request: {str(e)}")
     
-    # Next, try to get comparables from Zillow
-    zillow_comps = search_zillow_rentals(property_details)
-    all_comparables.extend(zillow_comps)
+    # If we don't have enough comparables from Rentcast, try Zillow
+    if len(all_comparables) < 3:
+        logger.info("Not enough comparables from Rentcast, trying Zillow")
+        zillow_comparables = search_zillow_rentals(property_details)
+        all_comparables.extend(zillow_comparables)
     
-    # If we have enough comparables, return them
-    if len(all_comparables) >= 3:
-        # Sort by distance
-        all_comparables.sort(key=lambda x: x["distance"])
-        return all_comparables[:5]  # Return up to 5 comparables
+    # If we still don't have enough comparables, generate mock data
+    if len(all_comparables) < 3:
+        logger.info("Not enough comparables from APIs, generating mock data")
+        mock_comparables = generate_mock_comparables(property_details)
+        all_comparables.extend(mock_comparables)
     
-    # If we don't have enough comparables, generate mock data
-    if len(all_comparables) == 0:
-        print("No comparables found from APIs. Using mock data.", file=sys.stderr)
-        mock_comps = generate_mock_comparables(property_details)
-        all_comparables.extend(mock_comps)
+    # Sort comparables by similarity (highest first)
+    all_comparables.sort(key=lambda x: x["similarity"], reverse=True)
     
-    return all_comparables[:5]  # Return at most 5 comparables
+    # Return the top 5 comparables
+    return all_comparables[:5]
 
 def calculate_rent_estimate(property_data):
     """
@@ -520,13 +533,403 @@ def get_historical_rental_data(property_details):
         print(f"ERROR: Error fetching historical rental data: {e}", file=sys.stderr)
         return None
 
+def get_property_owner_info(property_details):
+    """
+    Get property owner information from RentCast API.
+    """
+    # Check if we have an API key
+    api_key = os.environ.get("RENTCAST_API_KEY")
+    if not api_key:
+        print("Warning: No RentCast API key found. Skipping owner information.", 
+              file=sys.stderr)
+        return None
+    
+    # Clean the API key
+    api_key = api_key.strip()
+
+    # Get the required property details
+    address = property_details.get("address")
+    if not address:
+        print("Warning: No address provided. Skipping owner information.", 
+              file=sys.stderr)
+        return None
+
+    # Construct the API request
+    url = "https://api.rentcast.io/v1/properties"
+    headers = {
+        "accept": "application/json",
+        "X-API-KEY": api_key
+    }
+    
+    # Prepare parameters for the API request
+    params = {
+        "address": address,
+        "includeDetails": "true"  # Include detailed information including owner data
+    }
+
+    # Make the API request
+    try:
+        print(f"DEBUG: Making API request to {url} with params: {params}", 
+              file=sys.stderr)
+        response = requests.get(url, headers=headers, params=params)
+        
+        # Check for API errors
+        if response.status_code != 200:
+            print(f"ERROR: Property owner API returned status code {response.status_code}", file=sys.stderr)
+            print(f"Response: {response.text}", file=sys.stderr)
+            return None
+            
+        data = response.json()
+        
+        # Check if we got property data
+        if not data or not isinstance(data, list) or len(data) == 0:
+            print(f"ERROR: No property data found for address: {address}", file=sys.stderr)
+            return None
+            
+        # Get the first property (most relevant match)
+        property_data = data[0]
+        
+        # Extract owner information
+        owner_info = {
+            "ownerName": property_data.get("ownerName"),
+            "ownerAddress": property_data.get("ownerAddress"),
+            "ownerCity": property_data.get("ownerCity"),
+            "ownerState": property_data.get("ownerState"),
+            "ownerZip": property_data.get("ownerZip"),
+            "ownerOccupied": property_data.get("ownerOccupied", False),
+            "corporateOwned": property_data.get("corporateOwned", False)
+        }
+        
+        print(f"DEBUG: Owner information: {json.dumps(owner_info)}", file=sys.stderr)
+        return owner_info
+    except Exception as e:
+        print(f"ERROR: Error fetching property owner information: {e}", file=sys.stderr)
+        return None
+
+def get_property_value_estimate(property_details):
+    """
+    Get real-time property value estimate from RentCast API.
+    """
+    # Check if we have an API key
+    api_key = os.environ.get("RENTCAST_API_KEY")
+    if not api_key:
+        print("Warning: No RentCast API key found. Skipping property value estimate.", 
+              file=sys.stderr)
+        return None
+    
+    # Clean the API key
+    api_key = api_key.strip()
+
+    # Get the required property details
+    address = property_details.get("address")
+    if not address:
+        print("Warning: No address provided. Skipping property value estimate.", 
+              file=sys.stderr)
+        return None
+
+    # Construct the API request
+    url = "https://api.rentcast.io/v1/avm/value"
+    headers = {
+        "accept": "application/json",
+        "X-API-KEY": api_key
+    }
+    
+    # Prepare parameters for the API request
+    params = {
+        "address": address,
+        "propertyType": property_details.get("propertyType", ""),
+        "bedrooms": property_details.get("beds", ""),
+        "bathrooms": property_details.get("baths", ""),
+        "squareFootage": property_details.get("squareFeet", "")
+    }
+
+    # Make the API request
+    try:
+        print(f"DEBUG: Making API request to {url} with params: {params}", 
+              file=sys.stderr)
+        response = requests.get(url, headers=headers, params=params)
+        
+        # Check for API errors
+        if response.status_code != 200:
+            print(f"ERROR: Property value API returned status code {response.status_code}", file=sys.stderr)
+            print(f"Response: {response.text}", file=sys.stderr)
+            return None
+            
+        data = response.json()
+        print(f"DEBUG: API response: {json.dumps(data, indent=2)}", file=sys.stderr)
+        
+        # Format the response
+        value_estimate = {
+            "value": data.get("value"),
+            "valueRangeLow": data.get("valueRangeLow"),
+            "valueRangeHigh": data.get("valueRangeHigh"),
+            "latitude": data.get("latitude"),
+            "longitude": data.get("longitude"),
+            "comparables": data.get("comparables", [])
+        }
+        
+        return value_estimate
+    except Exception as e:
+        print(f"ERROR: Error fetching property value estimate: {e}", file=sys.stderr)
+        return None
+
+def get_recent_sales_comps(property_details):
+    """
+    Get recent sales comps from RentCast API.
+    """
+    # Check if we have an API key
+    api_key = os.environ.get("RENTCAST_API_KEY")
+    if not api_key:
+        print("Warning: No RentCast API key found. Skipping recent sales comps.", 
+              file=sys.stderr)
+        return None
+    
+    # Clean the API key
+    api_key = api_key.strip()
+
+    # Get the required property details
+    zip_code = property_details.get("zipCode")
+    if not zip_code:
+        print("Warning: No zip code provided. Skipping recent sales comps.", 
+              file=sys.stderr)
+        return None
+
+    # Construct the API request
+    url = "https://api.rentcast.io/v1/listings/sale"
+    headers = {
+        "accept": "application/json",
+        "X-API-KEY": api_key
+    }
+    
+    # Prepare parameters for the API request
+    params = {
+        "zipCode": zip_code,
+        "propertyType": property_details.get("propertyType", ""),
+        "bedrooms": property_details.get("beds", ""),
+        "bathrooms": property_details.get("baths", ""),
+        "limit": 10,  # Limit to 10 recent sales
+        "sort": "listedDate",
+        "order": "desc"  # Most recent first
+    }
+
+    # Make the API request
+    try:
+        print(f"DEBUG: Making API request to {url} with params: {params}", 
+              file=sys.stderr)
+        response = requests.get(url, headers=headers, params=params)
+        
+        # Check for API errors
+        if response.status_code != 200:
+            print(f"ERROR: Recent sales API returned status code {response.status_code}", file=sys.stderr)
+            print(f"Response: {response.text}", file=sys.stderr)
+            return None
+            
+        data = response.json()
+        
+        # Format the response
+        sales_comps = []
+        for listing in data:
+            sales_comp = {
+                "address": listing.get("formattedAddress"),
+                "price": listing.get("price"),
+                "beds": listing.get("bedrooms"),
+                "baths": listing.get("bathrooms"),
+                "sqft": listing.get("squareFootage"),
+                "yearBuilt": listing.get("yearBuilt"),
+                "propertyType": listing.get("propertyType"),
+                "listedDate": listing.get("listedDate"),
+                "latitude": listing.get("latitude"),
+                "longitude": listing.get("longitude"),
+                "daysOnMarket": listing.get("daysOnMarket")
+            }
+            sales_comps.append(sales_comp)
+        
+        return sales_comps
+    except Exception as e:
+        print(f"ERROR: Error fetching recent sales comps: {e}", file=sys.stderr)
+        return None
+
+def get_recent_rental_comps(property_details):
+    """
+    Get recent rental comps from RentCast API.
+    """
+    # Check if we have an API key
+    api_key = os.environ.get("RENTCAST_API_KEY")
+    if not api_key:
+        print("Warning: No RentCast API key found. Skipping recent rental comps.", 
+              file=sys.stderr)
+        return None
+    
+    # Clean the API key
+    api_key = api_key.strip()
+
+    # Get the required property details
+    zip_code = property_details.get("zipCode")
+    if not zip_code:
+        print("Warning: No zip code provided. Skipping recent rental comps.", 
+              file=sys.stderr)
+        return None
+
+    # Construct the API request
+    url = "https://api.rentcast.io/v1/listings/rental"
+    headers = {
+        "accept": "application/json",
+        "X-API-KEY": api_key
+    }
+    
+    # Prepare parameters for the API request
+    params = {
+        "zipCode": zip_code,
+        "propertyType": property_details.get("propertyType", ""),
+        "bedrooms": property_details.get("beds", ""),
+        "bathrooms": property_details.get("baths", ""),
+        "limit": 10,  # Limit to 10 recent rentals
+        "sort": "listedDate",
+        "order": "desc"  # Most recent first
+    }
+
+    # Make the API request
+    try:
+        print(f"DEBUG: Making API request to {url} with params: {params}", 
+              file=sys.stderr)
+        response = requests.get(url, headers=headers, params=params)
+        
+        # Check for API errors
+        if response.status_code != 200:
+            print(f"ERROR: Recent rentals API returned status code {response.status_code}", file=sys.stderr)
+            print(f"Response: {response.text}", file=sys.stderr)
+            return None
+            
+        data = response.json()
+        
+        # Format the response
+        rental_comps = []
+        for listing in data:
+            rental_comp = {
+                "address": listing.get("formattedAddress"),
+                "rent": listing.get("price"),
+                "beds": listing.get("bedrooms"),
+                "baths": listing.get("bathrooms"),
+                "sqft": listing.get("squareFootage"),
+                "yearBuilt": listing.get("yearBuilt"),
+                "propertyType": listing.get("propertyType"),
+                "listedDate": listing.get("listedDate"),
+                "latitude": listing.get("latitude"),
+                "longitude": listing.get("longitude"),
+                "daysOnMarket": listing.get("daysOnMarket")
+            }
+            rental_comps.append(rental_comp)
+        
+        return rental_comps
+    except Exception as e:
+        print(f"ERROR: Error fetching recent rental comps: {e}", file=sys.stderr)
+        return None
+
+def get_detailed_market_statistics(property_details):
+    """
+    Get detailed market statistics from RentCast API.
+    """
+    # Check if we have an API key
+    api_key = os.environ.get("RENTCAST_API_KEY")
+    if not api_key:
+        print("Warning: No RentCast API key found. Skipping detailed market statistics.", 
+              file=sys.stderr)
+        return None
+    
+    # Clean the API key
+    api_key = api_key.strip()
+
+    # Get the zip code from property details
+    zip_code = property_details.get("zipCode")
+    if not zip_code:
+        print("Warning: No zip code provided. Skipping detailed market statistics.", 
+              file=sys.stderr)
+        return None
+
+    # Construct the API request
+    url = "https://api.rentcast.io/v1/markets/statistics"
+    headers = {
+        "accept": "application/json",
+        "X-API-KEY": api_key
+    }
+    params = {
+        "zipCode": zip_code,
+        "propertyType": property_details.get("propertyType", ""),
+        "bedrooms": property_details.get("beds", "")
+    }
+
+    # Make the API request
+    try:
+        print(f"DEBUG: Making API request to {url} with params: {params}", 
+              file=sys.stderr)
+        response = requests.get(url, headers=headers, params=params)
+        
+        # Check for API errors
+        if response.status_code != 200:
+            print(f"ERROR: Market statistics API returned status code {response.status_code}", file=sys.stderr)
+            print(f"Response: {response.text}", file=sys.stderr)
+            return None
+            
+        data = response.json()
+        print(f"DEBUG: API response: {json.dumps(data, indent=2)}", file=sys.stderr)
+        
+        # Extract key statistics
+        market_stats = {
+            "rentalMarket": {
+                "averageRent": data.get("rentalMarket", {}).get("averageRent"),
+                "medianRent": data.get("rentalMarket", {}).get("medianRent"),
+                "averageDaysOnMarket": data.get("rentalMarket", {}).get("averageDaysOnMarket"),
+                "totalListings": data.get("rentalMarket", {}).get("totalListings"),
+                "rentTrend": data.get("rentalMarket", {}).get("rentTrend"),
+                "rentTrendPercentage": data.get("rentalMarket", {}).get("rentTrendPercentage")
+            },
+            "saleMarket": {
+                "averagePrice": data.get("saleMarket", {}).get("averagePrice"),
+                "medianPrice": data.get("saleMarket", {}).get("medianPrice"),
+                "averageDaysOnMarket": data.get("saleMarket", {}).get("averageDaysOnMarket"),
+                "totalListings": data.get("saleMarket", {}).get("totalListings"),
+                "priceTrend": data.get("saleMarket", {}).get("priceTrend"),
+                "priceTrendPercentage": data.get("saleMarket", {}).get("priceTrendPercentage")
+            },
+            "investmentMetrics": {
+                "averageCapRate": data.get("investmentMetrics", {}).get("averageCapRate"),
+                "medianCapRate": data.get("investmentMetrics", {}).get("medianCapRate"),
+                "averageCashOnCashReturn": data.get("investmentMetrics", {}).get("averageCashOnCashReturn"),
+                "medianCashOnCashReturn": data.get("investmentMetrics", {}).get("medianCashOnCashReturn"),
+                "averageRentToPrice": data.get("investmentMetrics", {}).get("averageRentToPrice"),
+                "medianRentToPrice": data.get("investmentMetrics", {}).get("medianRentToPrice")
+            }
+        }
+        
+        return market_stats
+    except Exception as e:
+        print(f"ERROR: Error fetching detailed market statistics: {e}", file=sys.stderr)
+        return None
+
 def analyze_property(property_details):
     """
-    Analyze the property and generate a rent estimate
-    based on the property details and comparable properties.
+    Analyze a property based on the provided details.
+    Returns a comprehensive analysis including rent estimate, comparable properties,
+    market trends, and recommendations.
     """
+    # First, geocode the address to get location data
+    logger.info("Starting property analysis")
+    logger.info(f"Property details: {json.dumps(property_details)}")
+    
+    # Geocode the address to get location data
+    location_data = geocode_address(property_details)
+    if not location_data:
+        logger.error("Failed to geocode property address")
+        # Continue with analysis but note the error
+        property_details["geocoding_error"] = True
+    else:
+        logger.info(f"Successfully geocoded property to: {location_data['latitude']}, {location_data['longitude']}")
+        # Make sure the property details include the location data
+        property_details.update(location_data)
+    
     # Find comparable properties
     comparables = find_comparable_properties(property_details)
+    logger.info(f"Found {len(comparables)} comparable properties")
     
     # Get market trends data
     market_trends = get_market_trends(property_details)
@@ -535,12 +938,20 @@ def analyze_property(property_details):
     historical_data = get_historical_rental_data(property_details)
     
     # Calculate average rent from comparables
-    avg_rent = sum(comp["rent"] for comp in comparables) / len(comparables)
-    
-    # Generate rent range
-    low_rent = round(avg_rent * 0.9, -1)  # 10% below average
-    high_rent = round(avg_rent * 1.1, -1)  # 10% above average
-    median_rent = round(avg_rent, -1)  # Average, rounded to nearest 10
+    if comparables:
+        avg_rent = sum(comp["rent"] for comp in comparables) / len(comparables)
+        
+        # Generate rent range
+        low_rent = round(avg_rent * 0.9, -1)  # 10% below average
+        high_rent = round(avg_rent * 1.1, -1)  # 10% above average
+        median_rent = round(avg_rent, -1)  # Average, rounded to nearest 10
+    else:
+        logger.warning("No comparable properties found, using default rent values")
+        # Default values if no comparables are found
+        avg_rent = 1500
+        low_rent = 1350
+        median_rent = 1500
+        high_rent = 1650
     
     # Generate influencing factors
     influencing_factors = [
@@ -551,6 +962,16 @@ def analyze_property(property_details):
         "Property condition and age"
     ]
     
+    # Add location details if available
+    if "city" in property_details and "state" in property_details:
+        influencing_factors.insert(
+            3, f"Location in {property_details['city']}, {property_details['state']}"
+        )
+    elif "zip_code" in property_details:
+        influencing_factors.insert(
+            3, f"Location in ZIP code {property_details['zip_code']}"
+        )
+    
     # Add amenities as a factor if provided
     amenities = property_details.get('amenities', [])
     if amenities:
@@ -559,9 +980,16 @@ def analyze_property(property_details):
     
     # Generate market comparison
     data_sources = set(comp.get("source", "Mock Data") for comp in comparables)
-    data_source = ", ".join(data_sources)
+    data_source = ", ".join(data_sources) if data_sources else "estimated data"
+    
+    location_text = ""
+    if "city" in property_details and "state" in property_details:
+        location_text = f"in {property_details['city']}, {property_details['state']}"
+    elif "zip_code" in property_details:
+        location_text = f"in ZIP code {property_details['zip_code']}"
+    
     market_comparison = (
-        f"Based on {len(comparables)} comparable properties in the area "
+        f"Based on {len(comparables)} comparable properties {location_text} "
         f"(using {data_source}), the average rent is ${avg_rent:.2f} per month. "
         f"Your property is "
         f"{'competitively' if median_rent <= avg_rent else 'premium'} "
@@ -703,6 +1131,21 @@ def analyze_property(property_details):
             "address": property_details.get("address", "")
         }
     
+    # Get property owner information
+    owner_info = get_property_owner_info(property_details)
+    
+    # Get property value estimate
+    value_estimate = get_property_value_estimate(property_details)
+    
+    # Get recent sales comps
+    recent_sales = get_recent_sales_comps(property_details)
+    
+    # Get recent rental comps
+    recent_rentals = get_recent_rental_comps(property_details)
+    
+    # Get detailed market statistics
+    detailed_market_stats = get_detailed_market_statistics(property_details)
+    
     # Create the analysis result
     analysis = {
         "rentRange": {
@@ -748,7 +1191,143 @@ def analyze_property(property_details):
     if historical_data:
         analysis["historicalData"] = historical_data
     
+    # Add the new data to the analysis result
+    if owner_info:
+        analysis["ownerInfo"] = owner_info
+    
+    if value_estimate:
+        analysis["valueEstimate"] = value_estimate
+    
+    if recent_sales:
+        analysis["recentSales"] = recent_sales
+    
+    if recent_rentals:
+        analysis["recentRentals"] = recent_rentals
+    
+    if detailed_market_stats:
+        analysis["detailedMarketStats"] = detailed_market_stats
+    
     return analysis
+
+def geocode_address(property_details):
+    """
+    Geocode the property address to get latitude and longitude coordinates.
+    Also extracts city, state, and other location data.
+    """
+    address = property_details.get("address", "")
+    zip_code = property_details.get("zipCode", "")
+    city = property_details.get("city", "")
+    unit = property_details.get("unit", "")
+    
+    # If we already have city in the input, use it
+    location_data = {
+        "latitude": None,
+        "longitude": None,
+        "city": city,
+        "zip_code": zip_code,
+        "state": property_details.get("state", "")
+    }
+    
+    if not address:
+        logger.error("No address provided for geocoding")
+        return location_data
+    
+    # Combine address components
+    full_address = address
+    if unit:
+        full_address += f" {unit}"
+    if city:
+        full_address += f", {city}"
+    if zip_code and zip_code not in full_address:
+        full_address += f", {zip_code}"
+    
+    logger.info(f"Geocoding address: {full_address}")
+    
+    # Get Google Maps API key
+    api_key = os.environ.get("NEXT_PUBLIC_GOOGLE_MAPS_API_KEY")
+    if not api_key:
+        logger.error("No Google Maps API key found in environment variables")
+        return location_data
+    
+    try:
+        # Prepare the API request
+        url = "https://maps.googleapis.com/maps/api/geocode/json"
+        params = {
+            "address": full_address,
+            "key": api_key
+        }
+        
+        # Make the API request
+        geocode_response = requests.get(url, params=params)
+        
+        # Check if the request was successful
+        if geocode_response.status_code == 200:
+            geocode_data = geocode_response.json()
+            
+            # Check if we got results
+            if geocode_data["status"] == "OK" and geocode_data["results"]:
+                # Extract the location data
+                location = geocode_data["results"][0]["geometry"]["location"]
+                latitude = location["lat"]
+                longitude = location["lng"]
+                
+                # Extract address components
+                address_components = geocode_data["results"][0].get("address_components", [])
+                location_data = {
+                    "latitude": latitude,
+                    "longitude": longitude,
+                    "formatted_address": geocode_data["results"][0].get("formatted_address", ""),
+                    "city": city,  # Use the provided city if available
+                    "zip_code": zip_code  # Use the provided zip code if available
+                }
+                
+                # Extract city, state, zip, etc. from geocoding results if not already provided
+                for component in address_components:
+                    types = component.get("types", [])
+                    if "locality" in types and not location_data.get("city"):
+                        location_data["city"] = component.get("long_name")
+                    elif "administrative_area_level_1" in types:
+                        location_data["state"] = component.get("short_name")
+                    elif "postal_code" in types and not location_data.get("zip_code"):
+                        location_data["zip_code"] = component.get("long_name")
+                    elif "neighborhood" in types:
+                        location_data["neighborhood"] = component.get("long_name")
+                    elif "route" in types:
+                        location_data["street"] = component.get("long_name")
+                    elif "street_number" in types:
+                        location_data["street_number"] = component.get("long_name")
+                
+                logger.info(f"Successfully geocoded address to: {latitude}, {longitude}")
+                logger.debug(f"Location data: {json.dumps(location_data)}")
+                
+                return location_data
+            else:
+                logger.error(f"No geocoding results found for address: {full_address}")
+                logger.error(f"Geocoding status: {geocode_data['status']}")
+                
+                # Handle specific error cases
+                if geocode_data["status"] == "REQUEST_DENIED":
+                    error_message = geocode_data.get("error_message", "")
+                    if "not authorized" in error_message.lower():
+                        logger.error("Google Maps API key is not authorized for the Geocoding API. Please enable it in the Google Cloud Console.")
+                    else:
+                        logger.error("Google Maps API key is invalid or has insufficient permissions")
+                elif geocode_data["status"] == "ZERO_RESULTS":
+                    logger.error("No results found for the address. Check if the address is valid.")
+                elif geocode_data["status"] == "OVER_QUERY_LIMIT":
+                    logger.error("Google Maps API query limit exceeded")
+                
+                # Return the basic location data we have
+                return location_data
+        else:
+            logger.error(f"Geocoding failed with status code: {geocode_response.status_code}")
+            logger.error(f"Response: {geocode_response.text}")
+            # Return the basic location data we have
+            return location_data
+    except Exception as e:
+        logger.exception(f"Exception during geocoding: {str(e)}")
+        # Return the basic location data we have
+        return location_data
 
 def main():
     """
